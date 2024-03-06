@@ -1,0 +1,111 @@
+---
+- name: Setup Grav CMS with Nginx, Let's Encrypt SSL, and Log Rotation
+  hosts: all
+  become: true
+  vars:
+    github_repo: "yourusername/your-grav-repo"
+    grav_site: "your-grav-site"
+    nginx_conf: "/path/to/your/nginx.conf"
+    logrotate_conf: "/path/to/your/nginx_logrotate"
+    log_dir: "/var/log/nginx"
+    log_push_script: "/usr/local/bin/push_logs.sh"
+    resource_info_script: "/usr/local/bin/export_resource_info.sh"
+    resource_info_log: "/path/to/resource_info.log"
+    domain: "your-domain.com"
+  tasks:
+    - name: Update package lists
+      apt:
+        update_cache: yes
+
+    - name: Install necessary packages
+      apt:
+        name: "{{ item }}"
+        state: present
+      loop:
+        - git
+        - nginx
+        - php-fpm
+        - php-cli
+        - php-curl
+        - php-zip
+        - php-gd
+        - php-mbstring
+        - php-xml
+        - certbot
+        - python3-certbot-nginx
+
+    - name: Clone Grav CMS repository from GitHub
+      git:
+        repo: "https://github.com/{{ github_repo }}.git"
+        dest: "/var/www/html/{{ grav_site }}"
+
+    - name: Copy custom nginx.conf
+      copy:
+        src: "{{ nginx_conf }}"
+        dest: "/etc/nginx/nginx.conf"
+
+    - name: Add FastCGI parameter for security
+      lineinfile:
+        path: "/etc/nginx/fastcgi.conf"
+        line: "fastcgi_param  HTTP_PROXY         "";"
+        state: present
+
+    - name: Obtain SSL certificate using Let's Encrypt
+      shell: "certbot --nginx -d {{ domain }} -d www.{{ domain }} --non-interactive --agree-tos --redirect --quiet"
+      args:
+        executable: /bin/bash
+
+    - name: Adjust PHP settings for Grav CMS
+      replace:
+        path: "/etc/php/7.4/fpm/php.ini"
+        regexp: "{{ item.regexp }}"
+        replace: "{{ item.replace }}"
+      loop:
+        - { regexp: '^memory_limit = .*', replace: 'memory_limit = 512M' }
+        - { regexp: '^max_execution_time = .*', replace: 'max_execution_time = 300' }
+
+    - name: Adjust file permissions
+      file:
+        path: "{{ item.path }}"
+        owner: www-data
+        group: www-data
+        recurse: yes
+        mode: "{{ item.mode }}"
+      loop:
+        - { path: "/var/www/html/{{ grav_site }}", mode: "0755" }
+        - { path: "/var/www/html/{{ grav_site }}", mode: "0644" }
+
+    - name: Restart services
+      systemd:
+        name: "{{ item }}"
+        state: restarted
+        enabled: yes
+      loop:
+        - nginx
+        - php7.4-fpm
+
+    - name: Copy logrotate configuration for Nginx logs
+      copy:
+        src: "{{ logrotate_conf }}"
+        dest: "/etc/logrotate.d/nginx"
+
+    - name: Create a script to push logs to GitHub
+      template:
+        src: push_logs.sh.j2
+        dest: "{{ log_push_script }}"
+        mode: "0755"
+
+    - name: Create a script to export resource information
+      template:
+        src: export_resource_info.sh.j2
+        dest: "{{ resource_info_script }}"
+        mode: "0755"
+
+    - name: Run the functions to push logs to GitHub and export resource information immediately
+      command: "{{ item }}"
+      args:
+        chdir: "{{ log_dir }}"
+      loop:
+        - "./{{ log_push_script }}"
+        - "./{{ resource_info_script }}"
+
